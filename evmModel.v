@@ -38,6 +38,12 @@ Definition withbyte(w: EVMWord)(i: nat): EVMWord := wand (wrshift' w (248%nat - 
 Definition Wones: EVMWord := wones WLen.
 Definition pushMask(bytes: nat): EVMWord := wnot (wlshift' Wones (bytes * 8)).
 Definition pushWordPass(w: EVMWord)(bytes: nat): EVMWord := wand (pushMask bytes) w.
+(* Compute whd W0xFF. *)
+Definition sextWordBytes(w: EVMWord)(bytes: nat): EVMWord := 
+  match whd (wlshift' w (256 - (bytes * 8))) with 
+  | true  => wor (wlshift' Wones (bytes * 8)) (pushMask bytes)
+  | false => pushMask bytes
+  end. 
 
 Definition map_n_evmword := M.t EVMWord.
 Definition find (k: EVMWord)(m: map_n_evmword) := M.find (wordToN k) m.
@@ -147,10 +153,22 @@ Definition existsE{L R: Set}(e: Either L R)(suchAs: R -> Prop): Prop :=
   | Right _ _ r => suchAs r
   end.
 
+Definition map{L R R1: Type}(s: L + R)(f: R -> R1): L + R1 := 
+  match s with 
+  | inl l => inl l
+  | inr r => inr (f r)
+  end.
+
 Definition flatMap{L R R1: Type}(s: L + R)(f: R -> L + R1): L + R1 := 
   match s with 
   | inl l => inl l
   | inr r => f r
+  end.
+
+Definition leftMap{L1 L2 R: Type}(s: L1+R)(f: L1 -> L2): L2 + R := 
+  match s with 
+  | inl l => inl (f l)
+  | inr r => inr r
   end.
 
 (* end straightforward either impl*)
@@ -198,8 +216,6 @@ Compute let pos := 4 in let l := 0 :: 1 :: 2 :: 3 :: 4 :: 5 :: 6 :: 7 :: nil in 
 (* end very util functions *) 
 (* execution 'monad' and error codes*)
 
-
-
 Inductive ExecutionState: Type := 
 | ExecutionStateMk: list (EVMWord) -> map_n_evmword -> map_n_evmword -> ExecutionState. (* stack memory storage*)
 
@@ -223,6 +239,11 @@ match es with
 | ExecutionStateMk stack _ storage => ExecutionStateMk stack memory storage
 end.
 
+Definition getStorage_ES es := 
+match es with
+| ExecutionStateMk _ _ storage => storage
+end.
+
 Definition setStorage_ES es storage := 
 match es with
 | ExecutionStateMk stack memory _ => ExecutionStateMk stack memory storage
@@ -243,6 +264,9 @@ Inductive ErrorCode: Set :=
 | BadShrArgI: ErrorCode
 | BadCallDataLoadArgI: ErrorCode
 | BadPeekArg: ErrorCode
+| NonexistentAddress: ErrorCode
+| NonexistentMemoryCell: ErrorCode
+| NonexistentStorageCell: ErrorCode
 .
 
 Inductive ErrorneousExecutionResult: Type := 
@@ -305,6 +329,15 @@ Definition removeAndReturnFromStackTwoItems es: (ExecutionResultOr (ExecutionSta
           runningExecutionWithStateT 
             ((setStack_ES es tail), head1, head2)
       | nil | _ :: nil => failWithErrorCodeT es StackUnderflow
+    end.
+
+Definition removeAndReturnFromStackThreeItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord)) := 
+  let stack := getStack_ES es in 
+    match stack with 
+      | head1 :: head2 :: head3:: tail => 
+          runningExecutionWithStateT 
+            ((setStack_ES es tail), head1, head2, head3)
+      | nil | _ :: nil | _ :: _ :: nil => failWithErrorCodeT es StackUnderflow
     end.
 
 Definition peekNthItemFromStack es (n: nat): (ExecutionResultOr EVMWord):= 
@@ -460,7 +493,7 @@ Inductive OpCode: Set :=
 | SimplePriceOpcodeMk : SimplePriceOpcode  -> OpCode
 .
 
-Inductive CallInfo: Set := 
+Inductive CallInfo: Type := 
 | CallInfoMk: 
   list (EVMWord)(*calldata*) ->
   EVMWord(*this contract address*) ->
@@ -476,95 +509,102 @@ Inductive CallInfo: Set :=
   EVMWord(*block timestamp*) ->
   EVMWord(*gas block limit*) ->
   EVMWord(*miner's address*) ->
+  map_n_evmword(*account balances *) -> 
   CallInfo.
 
 (* 
   match _ with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
   end
  *)
 Definition get_calldata(ci: CallInfo): list EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     calldata
   end.
 
 Definition get_thisContractAddress(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     thisContractAddress
   end.
 
 Definition get_callerBalance(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     callerBalance
   end.
 
 Definition get_transactionHash(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     transactionHash
   end.
 
 Definition get_callerAddress(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     callerAddress
   end.
 
 Definition get_callEthValue(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     callEthValue
   end.
 
 Definition get_thisContractCode(ci: CallInfo): list (word ByteLen) := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     thisContractCode
   end.
 
 Definition get_txGasPrice(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     txGasPrice
   end.
 
 Definition get_blockHash(ci: CallInfo):EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     blockHash
   end.
 
 Definition get_blockNumber(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     blockNumber
   end.
 
 Definition get_blockDificulty(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     blockDificulty
   end.
 
 Definition get_gasLimit(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     blockDificulty
   end.
 
 Definition get_miner(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     miner
   end.
 
 Definition get_blockTimestamp(ci: CallInfo): EVMWord := 
   match ci with 
-  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner => 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     blockTimestamp
+  end.
+
+Definition get_accountBalances(ci: CallInfo): map_n_evmword := 
+  match ci with 
+  | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
+    accountBalances
   end.
 
 Definition stopAction(state: ExecutionState): OpcodeApplicationResult := 
@@ -606,6 +646,15 @@ Definition divActionPure(state: ExecutionState): OpcodeApplicationResult :=
       end
     ).
 
+Definition sdivActionPure(state: ExecutionState): OpcodeApplicationResult := 
+    flatMap
+    (removeAndReturnFromStackTwoItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wdivZ a b))  
+      end
+    ).
+
 Definition modActionPure(state: ExecutionState): OpcodeApplicationResult := 
     flatMap
     (removeAndReturnFromStackTwoItems state)
@@ -614,10 +663,53 @@ Definition modActionPure(state: ExecutionState): OpcodeApplicationResult :=
       | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wmod a b))  
       end
     ).
-(*SMOD*)
-(*ADDMOD*)
-(*MULMOD*)
-(*SIGNEXTEND*)
+
+Definition smodActionPure(state: ExecutionState): OpcodeApplicationResult := 
+    flatMap 
+    (removeAndReturnFromStackTwoItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (ZToWord WLen (Z.rem (wordToZ a) (wordToZ b))))  
+      end
+    ).
+
+Definition addmodActionPure(state: ExecutionState): OpcodeApplicationResult := 
+    flatMap 
+    (removeAndReturnFromStackThreeItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, a, b, N) => 
+      let za := wordToZ a in let zb := wordToZ b in let zN := Z.of_N (wordToN N) in 
+      let zres := Z.rem (za + zb) zN in
+      runningExecutionWithState (pushItemToExecutionStateStack es (ZToWord WLen zres))  
+      end
+    ).
+
+Definition mulmodActionPure(state: ExecutionState): OpcodeApplicationResult := 
+    flatMap 
+    (removeAndReturnFromStackThreeItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, a, b, N) => 
+      let za := wordToZ a in let zb := wordToZ b in let zN := Z.of_N (wordToN N) in 
+      let zres := Z.rem (za * zb) zN in
+      runningExecutionWithState (pushItemToExecutionStateStack es (ZToWord WLen zres))  
+      end
+    ).
+
+Definition signextendActionPure(state: ExecutionState): OpcodeApplicationResult := 
+    flatMap 
+    (removeAndReturnFromStackTwoItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, a, b) => 
+        match extractByteAsNat b with 
+        | inl err => failWithErrorCode es err
+        | inr n   => runningExecutionWithState (pushItemToExecutionStateStack es (sextWordBytes a n))
+        end
+      end
+    ).
+
 Definition ltActionPure(state: ExecutionState): OpcodeApplicationResult := 
     flatMap
     (removeAndReturnFromStackTwoItems state)
@@ -710,7 +802,6 @@ Definition notActionPure(state: ExecutionState): OpcodeApplicationResult :=
       end
     ).
 
-
 Definition byteActionPure(state: ExecutionState): OpcodeApplicationResult := 
     flatMap
     (removeAndReturnFromStackTwoItems state)
@@ -745,7 +836,6 @@ Definition shlActionPure(state: ExecutionState): OpcodeApplicationResult :=
       end
     ).
 
-
 Definition shrActionPure(state: ExecutionState): OpcodeApplicationResult := 
     flatMap
     (removeAndReturnFromStackTwoItems state)
@@ -767,6 +857,19 @@ Definition shrActionPure(state: ExecutionState): OpcodeApplicationResult :=
 Definition addressActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
   runningExecutionWithState (pushItemToExecutionStateStack state (get_thisContractAddress ci)).
 
+Definition balanceActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult :=
+  flatMap 
+  (removeAndReturnFromStackOneItem state)
+  (fun tup2 => 
+      match tup2 with 
+      | (es, a) => 
+        match find a (get_accountBalances ci) with
+        | Some balance => runningExecutionWithState (pushItemToExecutionStateStack es balance)  
+        | None => failWithErrorCode es NonexistentAddress
+        end
+      end
+    ).
+  
 Definition originActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
   runningExecutionWithState (pushItemToExecutionStateStack state (get_callerAddress ci)).
 
@@ -788,7 +891,6 @@ Definition calldataloadActionPure(state: ExecutionState)(ci: CallInfo): OpcodeAp
           | Some dataCell => runningExecutionWithState (pushItemToExecutionStateStack es dataCell)  
           | None          => failWithErrorCode es BadCallDataLoadArgI
           end
-        
       end
     ).
 
@@ -832,11 +934,60 @@ Definition popActionPure(state: ExecutionState): OpcodeApplicationResult :=
       runningExecutionWithState (fst tup2)
     ).
 
-(* MLOAD *)
-(* MSTORE *)
-(* MSTORE8 *)
-(* SLOAD *)
-(* SSTORE *)
+Definition mloadActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackOneItem state)
+    (fun tup2 => 
+      match tup2 with 
+      | (es, key) => 
+        match find key (getMemory_ES es) with
+        | Some wrd => runningExecutionWithState (pushItemToExecutionStateStack state wrd)
+        | None     => failWithErrorCode es NonexistentMemoryCell
+        end
+      end
+    ).
+
+Definition mstoreActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackTwoItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, key, value) => runningExecutionWithState (setMemory_ES es (update (key, value) (getMemory_ES es)) )
+      end
+    ).
+
+Definition mstore8ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackTwoItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, key, value) => runningExecutionWithState (setMemory_ES es (update (key, wand value W0xFF) (getMemory_ES es)) )
+      end
+    ).
+
+
+Definition sloadActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackOneItem state)
+    (fun tup2 => 
+      match tup2 with 
+      | (es, key) => 
+        match find key (getStorage_ES es) with
+        | Some wrd => runningExecutionWithState (pushItemToExecutionStateStack state wrd)
+        | None     => failWithErrorCode es NonexistentMemoryCell
+        end
+      end
+    ).
+
+Definition sstoreActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackTwoItems state)
+    (fun tup3 => 
+      match tup3 with 
+      | (es, key, value) => runningExecutionWithState (setStorage_ES es (update (key, value) (getStorage_ES es)) )
+      end
+    ).
+
 (* PC *) 
 (* MSIZE *)
 (* GAS *)
@@ -855,7 +1006,7 @@ Definition dupActionPure(bytes: word 4)(state: ExecutionState):OpcodeApplication
 Definition swapActionPure(bytes: word 4)(state: ExecutionState): OpcodeApplicationResult := 
    let stack := getStack_ES state in 
    match listSwapWithHead(stack)((wordToNat bytes) + 1)  with 
-   | Some swappedStack => runningExecutionWithState  (setStack_ES state swappedStack)
+   | Some swappedStack => runningExecutionWithState (setStack_ES state swappedStack)
    | None              => failWithErrorCode state BadPeekArg
    end.
 
@@ -872,12 +1023,12 @@ Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionStat
   | MUL	          => mulActionPure state
   | SUB	          => subActionPure state
   | DIV	          => divActionPure state
-  | SDIV	        => stopExecutionWithSuccess (state) (* TODO implement *)
+  | SDIV	        => sdivActionPure state
   | MOD	          => modActionPure state
-  | SMOD	        => stopExecutionWithSuccess (state) (* TODO implement *)
-  | ADDMOD	      => stopExecutionWithSuccess (state) (* TODO implement *)
-  | MULMOD	      => stopExecutionWithSuccess (state) (* TODO implement *)
-  | SIGNEXTEND	  => stopExecutionWithSuccess (state) (* TODO implement *)
+  | SMOD	        => smodActionPure state 
+  | ADDMOD	      => addmodActionPure state 
+  | MULMOD	      => mulmodActionPure state
+  | SIGNEXTEND	  => signextendActionPure state
   | LT	          => ltActionPure state
   | GT	          => gtActionPure state
   | SLT	          => sltActionPure state
@@ -890,26 +1041,26 @@ Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionStat
   | NOT	          => notActionPure state
   | BYTE          => byteActionPure state
   | ADDRESS	      => addressActionPure state ci
-  | BALANCE	      => stopExecutionWithSuccess (state) (* TODO implement *)
+  | BALANCE	      => balanceActionPure state ci
   | ORIGIN	      => originActionPure state ci
   | CALLER	      => callerActionPure state ci
   | CALLVALUE	    => callvalueActionPure state ci
-  | CALLDATALOAD	=> stopExecutionWithSuccess (state) (* TODO implement *)
+  | CALLDATALOAD	=> calldataloadActionPure state ci
   | CALLDATASIZE	=> calldatasizeActionPure state ci
   | CODESIZE	    => codesizeActionPure state ci
   | GASPRICE	    => gaspriceActionPure state ci
   | EXTCODESIZE	  => stopExecutionWithSuccess (state) (* TODO implement *)
   | BLOCKHASH	    => blockhashActionPure state ci
-  | COINBASE	    => stopExecutionWithSuccess (state) (* TODO implement *)
+  | COINBASE	    => coinbaseActionPure state ci
   | TIMESTAMP	    => timestampActionPure state ci
   | NUMBER	      => numberActionPure state ci
   | DIFFICULTY  	=> dificultyActionPure state ci
   | GASLIMIT	    => gaslimitActionPure state ci
   | POP	          => popActionPure state
-  | MLOAD	        => stopExecutionWithSuccess (state) (* TODO implement *)
-  | MSTORE	      => stopExecutionWithSuccess (state) (* TODO implement *)
-  | MSTORE8	      => stopExecutionWithSuccess (state) (* TODO implement *)
-  | SLOAD	        => stopExecutionWithSuccess (state) (* TODO implement *)
+  | MLOAD	        => mloadActionPure state
+  | MSTORE	      => mstoreActionPure state
+  | MSTORE8	      => mstore8ActionPure state
+  | SLOAD	        => sloadActionPure state
   | PC	          => stopExecutionWithSuccess (state) (* TODO implement *)
   | MSIZE	        => stopExecutionWithSuccess (state) (* TODO implement *)
   | GAS	          => stopExecutionWithSuccess (state) (* TODO implement *)
