@@ -261,6 +261,7 @@ Inductive ErrorCode: Set :=
 | NonexistentMemoryCell: ErrorCode
 | NonexistentStorageCell: ErrorCode
 | NonexistentCallDataCell : ErrorCode
+| NotImplemented : ErrorCode
 .
 
 Inductive ErrorneousExecutionResult: Type := 
@@ -278,15 +279,12 @@ Definition ExecutionResultOr T : Type := ExecutionResult + T.
 Definition stopExecutionWithSuccess(es: ExecutionState): OpcodeApplicationResult := 
   inl (inr (SuccessfulExecutionResultMk es)).
 
-Definition failWithErrorCode(es: ExecutionState)(errorCode: ErrorCode): OpcodeApplicationResult :=
+Definition failWithErrorCode{T: Type}(es: ExecutionState)(errorCode: ErrorCode): ExecutionResultOr T :=
   inl ( inl (ErrorneousExecutionResultMk errorCode es)). 
 
-Definition failWithErrorCodeT{T: Type} es (errorCode: ErrorCode): ExecutionResultOr T := 
-  inl (inl (ErrorneousExecutionResultMk errorCode es)).
+(* Definition runningExecutionWithState es: OpcodeApplicationResult := inr es. *)
 
-Definition runningExecutionWithState es: OpcodeApplicationResult := inr es.
-
-Definition runningExecutionWithStateT {T: Type}(t: T): ExecutionResultOr T := inr t.
+Definition runningExecutionWithState {T: Type}(t: T): ExecutionResultOr T := inr t.
 (* end handy constructors *) 
 (* program counter operations *)
 
@@ -312,17 +310,17 @@ Definition removeAndReturnFromStackOneItem es: (ExecutionResultOr (ExecutionStat
   let stack := getStack_ES es in  
     match stack with 
       | head1 :: tail => 
-          runningExecutionWithStateT ((setStack_ES es tail), head1)
-      | nil => failWithErrorCodeT es StackUnderflow
+          runningExecutionWithState ((setStack_ES es tail), head1)
+      | nil => failWithErrorCode es StackUnderflow
     end.
 
 Definition removeAndReturnFromStackTwoItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord)) := 
   let stack := getStack_ES es in 
     match stack with 
       | head1 :: head2 :: tail => 
-          runningExecutionWithStateT 
+          runningExecutionWithState
             ((setStack_ES es tail), head1, head2)
-      | nil | _ :: nil => failWithErrorCodeT es StackUnderflow
+      | nil | _ :: nil => failWithErrorCode es StackUnderflow
     end.
 
 Definition removeAndReturnFromStackTwoItemsEnder es: (ErrorneousExecutionResult + (ExecutionState * EVMWord * EVMWord)) := 
@@ -337,43 +335,43 @@ Definition removeAndReturnFromStackThreeItems es: (ExecutionResultOr (ExecutionS
   let stack := getStack_ES es in 
     match stack with 
       | head1 :: head2 :: head3:: tail => 
-          runningExecutionWithStateT 
+          runningExecutionWithState
             ((setStack_ES es tail), head1, head2, head3)
-      | nil | _ :: nil | _ :: _ :: nil => failWithErrorCodeT es StackUnderflow
+      | nil | _ :: nil | _ :: _ :: nil => failWithErrorCode es StackUnderflow
     end.
 
 Definition removeAndReturnFromStackFourItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord * EVMWord)) := 
   let stack := getStack_ES es in 
     match stack with 
       | head1 :: head2 :: head3 :: head4 :: tail => 
-          runningExecutionWithStateT 
+          runningExecutionWithState
             ((setStack_ES es tail), head1, head2, head3, head4)
-      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil=> failWithErrorCodeT es StackUnderflow
+      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil=> failWithErrorCode es StackUnderflow
     end.
 
 Definition removeAndReturnFromStackFiveItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord * EVMWord * EVMWord)) := 
   let stack := getStack_ES es in 
     match stack with 
       | head1 :: head2 :: head3 :: head4 :: head5 :: tail => 
-          runningExecutionWithStateT 
+          runningExecutionWithState
             ((setStack_ES es tail), head1, head2, head3, head4, head5)
-      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: nil => failWithErrorCodeT es StackUnderflow
+      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: nil => failWithErrorCode es StackUnderflow
     end.
 
 Definition removeAndReturnFromStackSixItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord * EVMWord * EVMWord * EVMWord)) := 
   let stack := getStack_ES es in 
     match stack with 
       | head1 :: head2 :: head3 :: head4 :: head5 :: head6 :: tail => 
-          runningExecutionWithStateT 
+          runningExecutionWithState
             ((setStack_ES es tail), head1, head2, head3, head4, head5, head6)
-      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: _ :: nil => failWithErrorCodeT es StackUnderflow
+      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: _ :: nil => failWithErrorCode es StackUnderflow
     end.
 
 Definition peekNthItemFromStack es (n: nat): (ExecutionResultOr EVMWord):= 
   let stack := getStack_ES es in
     match nth_error stack n with 
-      | Some item => runningExecutionWithStateT item
-      | None      => failWithErrorCodeT es BadPeekArg
+      | Some item => runningExecutionWithState item
+      | None      => failWithErrorCode es BadPeekArg
     end.
 (* end stack operations *)
 
@@ -1065,12 +1063,23 @@ Definition sloadActionPure(state: ExecutionState): OpcodeApplicationResult :=
       end
     ).
 
-Definition sstoreActionPure(state: ExecutionState): OpcodeApplicationResult := 
+Definition sstoreActionPure(state: ExecutionState): ExecutionResultOr (ExecutionState * nat) := 
   flatMap
   (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, key, value) => runningExecutionWithState (setStorage_ES es (update (key, value) (getStorage_ES es)) )
+      | (es, key, value) => 
+        let storage := getStorage_ES es in
+        let updatedStorageES := setStorage_ES es (update (key, value) storage) in
+        match find key storage with 
+         | Some w => 
+          match (weqb w WZero, weqb value WZero)  with 
+          | (true, true)  => runningExecutionWithState (es, 5000)
+          | (true, false) => runningExecutionWithState (updatedStorageES, 20000)
+          | (false, _) => runningExecutionWithState (setStorage_ES es (update (key, value) (getStorage_ES es)), 5000)
+          end
+         | None => runningExecutionWithState (updatedStorageES, 20000)
+        end
       end
     ).
 
@@ -1159,33 +1168,33 @@ Definition jumpiActionPure(state: ExecutionState)(program: list OpCode): OpcodeA
     end
   ).
 
-Definition calldatacopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+Definition calldatacopyActionPure(state: ExecutionState)(ci: CallInfo): ExecutionResultOr (ExecutionState * nat) := 
   flatMap
   (removeAndReturnFromStackThreeItems state) 
   (fun tup4 => 
     match tup4 with 
     | (es, destOffset, offset, length) => 
       match getSliceFromList (get_calldata ci) (wordToNat offset) (wordToNat length) with 
-      | Some words => runningExecutionWithState (insertItemsIntoMemory es (wordToNat destOffset) words)
+      | Some words => runningExecutionWithState ((insertItemsIntoMemory es (wordToNat destOffset) words), 2 + (List.length words) * 3)
       | None       => failWithErrorCode es NonexistentCallDataCell
       end
     end)
 .
 
-Definition codecopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+Definition codecopyActionPure(state: ExecutionState)(ci: CallInfo): ExecutionResultOr (ExecutionState * nat):= 
   flatMap
   (removeAndReturnFromStackThreeItems state) 
   (fun tup4 => 
     match tup4 with 
     | (es, destOffset, offset, length) => 
       match getSliceFromList (get_thisContractCode ci) (wordToNat offset) (wordToNat length) with 
-      | Some words => runningExecutionWithState (insertItemsIntoMemory es (wordToNat destOffset) (zipListOfBytesIntoListOfWords words))
+      | Some words => runningExecutionWithState ((insertItemsIntoMemory es (wordToNat destOffset) (zipListOfBytesIntoListOfWords words)), 2 + (List.length words) * 3)
       | None       => failWithErrorCode es NonexistentCallDataCell
       end
     end)
 .
 
-Definition extcodecopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+Definition extcodecopyActionPure(state: ExecutionState)(ci: CallInfo): ExecutionResultOr (ExecutionState * nat) := 
   flatMap
   (removeAndReturnFromStackFourItems state) 
   (fun tup5 => 
@@ -1194,7 +1203,7 @@ Definition extcodecopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApp
       match find addr (getContractMap_ES es) with 
       | Some contract => 
         match getSliceFromList (contract) (wordToNat offset) (wordToNat length) with 
-        | Some words => runningExecutionWithState (insertItemsIntoMemory es (wordToNat destOffset) (zipListOfBytesIntoListOfWords words))
+        | Some words => runningExecutionWithState ((insertItemsIntoMemory es (wordToNat destOffset) (zipListOfBytesIntoListOfWords words)), 700 + (List.length words) * 3)
         | None       => failWithErrorCode es NonexistentCallDataCell
         end
       | None => failWithErrorCode es NonexistentContract
@@ -1202,7 +1211,7 @@ Definition extcodecopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApp
     end)
 .
 
-Definition log0ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+Definition log0ActionPure(state: ExecutionState): ExecutionResultOr (ExecutionState * nat) := 
   flatMap 
   (removeAndReturnFromStackTwoItems state) 
   (fun tup3 => 
@@ -1214,12 +1223,12 @@ Definition log0ActionPure(state: ExecutionState): OpcodeApplicationResult :=
           let log := Log0 logData in 
           let logs := getLog_ES es in 
           let es2 := setLog_ES es logs in
-            runningExecutionWithState es2
+            runningExecutionWithState (es2, 375 + (List.length logData * 8 * 32))
         end
       end
     ).
 
-Definition log1ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+Definition log1ActionPure(state: ExecutionState): ExecutionResultOr (ExecutionState * nat) := 
   flatMap 
   (removeAndReturnFromStackThreeItems state) 
   (fun tup4 => 
@@ -1231,12 +1240,12 @@ Definition log1ActionPure(state: ExecutionState): OpcodeApplicationResult :=
           let log := Log1 topic0 logData  in 
           let logs := getLog_ES es in 
           let es2 := setLog_ES es logs in
-            runningExecutionWithState es2
+            runningExecutionWithState (es2, 2 * 375 + (List.length logData * 8 * 32))
         end
       end
     ).
 
-Definition log2ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+Definition log2ActionPure(state: ExecutionState): ExecutionResultOr (ExecutionState * nat) := 
   flatMap 
   (removeAndReturnFromStackFourItems state) 
   (fun tup5 => 
@@ -1248,12 +1257,12 @@ Definition log2ActionPure(state: ExecutionState): OpcodeApplicationResult :=
           let log := Log2 topic0 topic1 logData  in 
           let logs := getLog_ES es in 
           let es2 := setLog_ES es logs in
-            runningExecutionWithState es2
+            runningExecutionWithState (es2, 3 * 375  + (List.length logData * 8 * 32))
         end
       end
     ).
 
-Definition log3ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+Definition log3ActionPure(state: ExecutionState): ExecutionResultOr (ExecutionState * nat) := 
   flatMap 
   (removeAndReturnFromStackFiveItems state) 
   (fun tup6 => 
@@ -1265,12 +1274,12 @@ Definition log3ActionPure(state: ExecutionState): OpcodeApplicationResult :=
           let log := Log3 topic0 topic1 topic2 logData  in 
           let logs := getLog_ES es in 
           let es2 := setLog_ES es logs in
-            runningExecutionWithState es2
+            runningExecutionWithState  (es2, 4 * 375  + (List.length logData * 8 * 32))
         end
       end
     ).
 
-Definition log4ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+Definition log4ActionPure(state: ExecutionState): ExecutionResultOr (ExecutionState * nat)  := 
   flatMap 
   (removeAndReturnFromStackSixItems state) 
   (fun tup6 => 
@@ -1282,19 +1291,19 @@ Definition log4ActionPure(state: ExecutionState): OpcodeApplicationResult :=
           let log := Log4 topic0 topic1 topic2 topic3 logData  in 
           let logs := getLog_ES es in 
           let es2 := setLog_ES es logs in
-            runningExecutionWithState es2
+            runningExecutionWithState  (es2, 5 * 375  + (List.length logData * 8 * 32))
         end
       end
     ).
 
 (*DELEGATECALL*)
 (*SELFDESTRUCT*)
-(* Definition expCost(pow: word WLen): nat := 
+Definition expCost(pow: word WLen): nat := 
   match weqb pow WZero with 
   | true  => 10%nat
   | false => 10%nat + 10%nat * (1%nat + ((log2Orzero pow)/ 8%nat))
   end.
-
+(* 
 Definition expActionPure(state: ExecutionState)(program: list OpCode)(gas: nat): OpcodeApplicationResult :=
   flatMap 
   (removeAndReturnFromStackTwoItems state)
@@ -1358,30 +1367,34 @@ Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionStat
   | PUSH arg word	=> pushActionPure arg word state
   | DUP arg	      => dupActionPure arg state
   | SWAP	arg     => swapActionPure arg state
-  | CREATE	      => stopExecutionWithSuccess (state) (* TODO implement *)
+  | CREATE	      => failWithErrorCode state NotImplemented
   | JUMP          => jumpActionPure state program
   | JUMPI         => jumpiActionPure state program
 (*   | _   => stopExecutionWithSuccess (state) *)
   end.
 
-Definition opcodeProgramStateChangeComplex(opc: ComplexPriceOpcode)(state: ExecutionState)(ci: CallInfo)(gas pc: nat)(program: list OpCode): OpcodeApplicationResult := 
+
+Definition opcodeProgramStateChangeComplex(opc: ComplexPriceOpcode)(state: ExecutionState)(ci: CallInfo)(gas pc: nat)(program: list OpCode): ExecutionResultOr (ExecutionState* nat) := 
   match opc with 
-  |	EXP           => stopExecutionWithSuccess (state)
-  |	SHA3          => stopExecutionWithSuccess (state)
-  |	CALLDATACOPY  => stopExecutionWithSuccess (state)
-  |	CODECOPY      => stopExecutionWithSuccess (state)
-  |	EXTCODECOPY   => stopExecutionWithSuccess (state)
-  |	SSTORE        => stopExecutionWithSuccess (state)
-  |	LOG0          => stopExecutionWithSuccess (state)
-  |	LOG1          => stopExecutionWithSuccess (state)
-  |	LOG2          => stopExecutionWithSuccess (state)
-  |	LOG3          => stopExecutionWithSuccess (state)
-  |	LOG4          => stopExecutionWithSuccess (state)
-  |	CALL          => stopExecutionWithSuccess (state)
-  |	CALLCODE      => stopExecutionWithSuccess (state)
-  |	DELEGATECALL  => stopExecutionWithSuccess (state)
-  |	SELFDESTRUCT  => stopExecutionWithSuccess (state)
+  |	EXP           => failWithErrorCode state NotImplemented
+  |	SHA3          => failWithErrorCode state NotImplemented
+  |	CALLDATACOPY  => calldatacopyActionPure state ci
+  |	CODECOPY      => codecopyActionPure state ci
+  |	EXTCODECOPY   => extcodecopyActionPure state ci
+  |	SSTORE        => sstoreActionPure state 
+  |	LOG0          => log0ActionPure state 
+  |	LOG1          => log1ActionPure state 
+  |	LOG2          => log2ActionPure state 
+  |	LOG3          => log3ActionPure state 
+  |	LOG4          => log4ActionPure state 
+  |	CALL          => failWithErrorCode state NotImplemented
+  |	CALLCODE      => failWithErrorCode state NotImplemented
+  |	DELEGATECALL  => failWithErrorCode state NotImplemented
+  |	SELFDESTRUCT  => failWithErrorCode state NotImplemented
   end.
+
+
+
 
 (* Super ugly but i don't wan to bother with well-founded stuff.*)
 (* Check Nat.eqb.
