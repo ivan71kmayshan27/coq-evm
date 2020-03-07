@@ -6,6 +6,8 @@ Require Import Coq.ZArith.ZArith.
 Require Import Coq.Arith.Compare_dec.
 Require Import Coq.NArith.NArith.
 Require Import Coq.Structures.OrderedType.
+Require Import Coq.Numbers.NatInt.NZLog.
+Require Import Coq.ZArith.Wf_Z.
 Require Export FMapAVL.
 Require Export Coq.Structures.OrderedTypeEx.
 
@@ -45,10 +47,41 @@ Definition sextWordBytes(w: EVMWord)(bytes: nat): EVMWord :=
   | false => pushMask bytes
   end. 
 
+Definition bytetoEWMword(w: word 8): EVMWord. Proof.
+apply (Word.combine w (wzero' 248)).
+Defined.
+Compute wordToN (bytetoEWMword (natToWord 8 1)).
+
 Definition map_n_evmword := M.t EVMWord.
-Definition find (k: EVMWord)(m: map_n_evmword) := M.find (wordToN k) m.
+Definition find {V: Type}(k: EVMWord)(m: M.t V) := M.find (wordToN k) m.
 Definition update (p: EVMWord * EVMWord) (m: map_n_evmword) :=
   M.add (wordToN (fst p)) (snd p) m.
+Definition mapLength {V: Type}(m: M.t V): nat :=
+  length (M.elements m).
+Fixpoint wordmsb {sz: nat}(bitnum aux: nat)(w: word sz): nat :=
+  match w with 
+  | WO => aux
+  | WS b w1 => 
+    match b with 
+    | true  => wordmsb (S bitnum) bitnum w1
+    | false => wordmsb (S bitnum) aux w1
+    end 
+  end.
+
+Definition log2Orzero {sz} (w: word sz): nat := wordmsb 0 0 w.
+(* Fixpoint effExp(a b: Z){struct b}: Z  := 
+  match Z.eqb b 0 with
+  | true  => 1
+  | galse => 
+    match Z.eqb (b / 2) 1 with
+    | true  => a * effExp a (b - 1)
+    | false => (effExp a (b / 2)) * (effExp a (b / 2))
+    end
+  end. *)
+  
+
+Compute log2Orzero (natToWord 8 7).
+
 Notation "k |-> v" := (pair k v) (at level 60).
 Notation "k |-> v" := (pair k v) (at level 60).
 Notation "[ ]" := (M.empty nat).
@@ -56,102 +89,7 @@ Notation "[ p1 , .. , pn ]" := (update p1 .. (update pn (M.empty nat)) .. ).
 
 Compute pushWordPass Wones 32.
 
-Inductive Tuple2(T1 T2: Set):Set := 
-  | Tuple2Mk: T1 -> T2 -> Tuple2 T1 T2.
-
-Definition _1 {T1 T2: Set}(t: Tuple2 T1 T2): T1 := 
-  match t with 
-  | Tuple2Mk _ _ l _ => l
-  end.
-
-Definition _2 {T1 T2: Set}(t: Tuple2 T1 T2): T2 := 
-  match t with 
-  | Tuple2Mk _ _ _ r => r
-  end.
-
-Inductive Tuple3(T1 T2 T3: Set):Set := 
-  | Tuple3Mk: T1 -> T2 -> T3 -> Tuple3 T1 T2 T3.
-
-Inductive Tuple4(T1 T2 T3 T4: Set):Set := 
-  | Tuple4Mk: T1 -> T2 -> T3 -> T4 -> Tuple4 T1 T2 T3 T4.
-
-Inductive Tuple5(T1 T2 T3 T4 T5: Set):Set := 
-  | Tuple5Mk: T1 -> T2 -> T3 -> T4 -> T5 -> Tuple5 T1 T2 T3 T4 T5.
-
-Inductive Tuple6(T1 T2 T3 T4 T5 T6: Set):Set := 
-  | Tuple6Mk: T1 -> T2 -> T3 -> T4 -> T5 -> T6 -> Tuple6 T1 T2 T3 T4 T5 T6.
-
-(* end coq tuples *)
-(* straightforward either impl*)
-Inductive Either(L R: Set): Set  := 
-| Left: L -> Either L R
-| Right: R -> Either L R.
-
-Definition leftE{L R: Set}(e: Either L R): option L := 
-  match e with 
-  | Left _ _ l => Some l 
-  | Right _ _ _ => None
-  end.
-
-Definition rightE{L R: Set}(e: Either L R): option R := 
-  match e with 
-  | Left _ _ _ => None 
-  | Right _ _ r => Some r
-  end.
-
-Definition mapE{L R1 R2: Set}(e: Either L R1)(f: R1 -> R2): Either L R2 := 
-  match e with
-  | Left _ _ l => Left L R2 l
-  | Right _ _ r => Right L R2 (f r)
-  end.
-
-Definition leftMapE{L1 L2 R: Set}(e: Either L1 R)(f: L1 -> L2): Either L2 R := 
-  match e with
-  | Left _ _ l => Left L2 R (f l)
-  | Right _ _ r => Right L2 R r
-  end.
-
-Definition foldE{L R T: Set} (e: Either L R)(lf: L -> T)(rf: R -> T): T := 
-  match e with
-  | Left _ _ l => lf l
-  | Right _ _ r => rf r
-  end.
-
-Definition bimapE{L1 L2 R1 R2: Set} (e: Either L1 R1)(lf: L1 -> L2)(rf: R1 -> R2): Either L2 R2 := 
-  match e with
-  | Left _ _ l => Left L2 R2 (lf l)
-  | Right _ _ r => Right L2 R2 (rf r)
-  end.
-
-Definition flatMapE{L R: Set}(e: Either L R)(f: R -> Either L R): Either L R := 
-  match e with 
-  | Left _ _ l => Left L R l 
-  | Right _ _ r => f r
-  end.
-
-Definition flatMapECT{L R1 R2: Set}(e: Either L R1)(f: R1 -> Either L R2): Either L R2 := 
-  match e with 
-  | Left _ _ l => Left L R2 l 
-  | Right _ _ r => f r
-  end.
-
-Definition leftFlatMapE{L R: Set}(e: Either L R)(f: L -> Either L R): Either L R :=
-  match e with 
-  | Left _ _ l => f l
-  | Right _ _ r => Right L R r
-  end.
-
-Definition recoverE{L R: Set}(e: Either L R)(f: L -> R): Either L R := 
-  match e with
-  | Left _ _ l => Right L R (f l)
-  | Right _ _ r => Right L R r
-  end.
-
-Definition existsE{L R: Set}(e: Either L R)(suchAs: R -> Prop): Prop := 
-  match e with 
-  | Left _ _ _ => False
-  | Right _ _ r => suchAs r
-  end.
+Compute NToWord 8 1.
 
 Definition map{L R R1: Type}(s: L + R)(f: R -> R1): L + R1 := 
   match s with 
@@ -160,6 +98,13 @@ Definition map{L R R1: Type}(s: L + R)(f: R -> R1): L + R1 :=
   end.
 
 Definition flatMap{L R R1: Type}(s: L + R)(f: R -> L + R1): L + R1 := 
+  match s with 
+  | inl l => inl l
+  | inr r => f r
+  end.
+
+
+Definition flatMapT(L R R1: Type)(s: L + R)(f: R -> L + R1): L + R1 := 
   match s with 
   | inl l => inl l
   | inr r => f r
@@ -212,45 +157,92 @@ Definition listSwapWithHead{A: Set}(l: list A)(pos: nat): option (list A) :=
       Some ((item :: middle) ++ (head :: rest))
     )
   ).
+
+Definition getSliceFromList{T: Type}(l: list T)(offset length: nat): option (list T) := 
+  match Nat.ltb (offset+ length) (List.length l) with
+  | true  => Some (firstn length (skipn offset l))
+  | false => None
+  end.
+
+Compute let offset := 35 in let length := 3 in let l := 0 :: 1 :: 2 :: 3 :: 4 :: 5 :: 6 :: 7 :: nil in getSliceFromList l offset length.
+
 Compute let pos := 4 in let l := 0 :: 1 :: 2 :: 3 :: 4 :: 5 :: 6 :: 7 :: nil in listSwapWithHead l pos.
 (* end very util functions *) 
 (* execution 'monad' and error codes*)
+Inductive Log: Type := 
+| Log0: list EVMWord -> Log
+| Log1: EVMWord -> list EVMWord -> Log
+| Log2: EVMWord -> EVMWord -> list EVMWord -> Log
+| Log3: EVMWord -> EVMWord -> EVMWord -> list EVMWord -> Log
+| Log4: EVMWord -> EVMWord -> EVMWord -> EVMWord -> list EVMWord -> Log.
 
 Inductive ExecutionState: Type := 
-| ExecutionStateMk: list (EVMWord) -> map_n_evmword -> map_n_evmword -> ExecutionState. (* stack memory storage*)
+| ExecutionStateMk: list (EVMWord) -> map_n_evmword -> map_n_evmword -> (M.t (list (word 8))) -> nat -> (list Log) -> ExecutionState. (* pc stack memory storage contracts logs*)
+
+Definition getLog_ES es := 
+match es with 
+| ExecutionStateMk _ _ _ _ _ logs => logs
+end.
+
+Definition setLog_ES es logs := 
+match es with 
+| ExecutionStateMk stack memory storage contractMap pc _ => ExecutionStateMk stack memory storage contractMap pc logs
+end.
+
+Definition getPc_ES es := 
+match es with
+| ExecutionStateMk _ _ _ _ pc _ => pc
+end.
+
+Definition setPc_ES es pc := 
+match es with
+| ExecutionStateMk stack memory storage contractMap _ logs => ExecutionStateMk stack memory storage contractMap pc logs
+end.
 
 Definition getStack_ES es := 
 match es with
-| ExecutionStateMk stack _ _=> stack
+| ExecutionStateMk stack _ _ _ _ _ => stack
 end.
 
 Definition getMemory_ES es := 
 match es with
-| ExecutionStateMk _ memory _=> memory
+| ExecutionStateMk _ memory _ _ _ _ => memory
 end.
 
 Definition setStack_ES es stack := 
 match es with
-| ExecutionStateMk _ memory storage => ExecutionStateMk stack memory storage
+| ExecutionStateMk _ memory storage contractMap pc logs => ExecutionStateMk stack memory storage contractMap pc logs 
 end.
 
 Definition setMemory_ES es memory := 
 match es with
-| ExecutionStateMk stack _ storage => ExecutionStateMk stack memory storage
+| ExecutionStateMk stack _ storage contractMap pc logs => ExecutionStateMk stack memory storage contractMap pc logs
 end.
 
 Definition getStorage_ES es := 
 match es with
-| ExecutionStateMk _ _ storage => storage
+| ExecutionStateMk _ _ storage _ _ _ => storage
 end.
 
 Definition setStorage_ES es storage := 
 match es with
-| ExecutionStateMk stack memory _ => ExecutionStateMk stack memory storage
+| ExecutionStateMk stack memory _ contractMap pc logs => ExecutionStateMk stack memory storage contractMap pc logs
+end.
+
+Definition getContractMap_ES es := 
+match es with
+| ExecutionStateMk _ _ _ contractMap _ _ => contractMap
+end.
+
+Definition setContractMap_ES es contractMap := 
+match es with
+| ExecutionStateMk stack memory storage _ pc logs => ExecutionStateMk stack memory storage contractMap pc logs
 end.
 
 Inductive SuccessfulExecutionResult: Type := 
-| SuccessfulExecutionResultMk: ExecutionState -> SuccessfulExecutionResult.
+| SuccessfulExecutionResultMk: ExecutionState -> SuccessfulExecutionResult
+| SuccessfulExecutionResultMkWithData: ExecutionState -> list EVMWord -> SuccessfulExecutionResult
+.
 
 Inductive ErrorCode: Set := 
 | OutOfGas: ErrorCode
@@ -265,8 +257,10 @@ Inductive ErrorCode: Set :=
 | BadCallDataLoadArgI: ErrorCode
 | BadPeekArg: ErrorCode
 | NonexistentAddress: ErrorCode
+| NonexistentContract: ErrorCode
 | NonexistentMemoryCell: ErrorCode
 | NonexistentStorageCell: ErrorCode
+| NonexistentCallDataCell : ErrorCode
 .
 
 Inductive ErrorneousExecutionResult: Type := 
@@ -331,6 +325,14 @@ Definition removeAndReturnFromStackTwoItems es: (ExecutionResultOr (ExecutionSta
       | nil | _ :: nil => failWithErrorCodeT es StackUnderflow
     end.
 
+Definition removeAndReturnFromStackTwoItemsEnder es: (ErrorneousExecutionResult + (ExecutionState * EVMWord * EVMWord)) := 
+  let stack := getStack_ES es in 
+    match stack with 
+      | head1 :: head2 :: tail => 
+          inr ((setStack_ES es tail), head1, head2)
+      | nil | _ :: nil => inl (ErrorneousExecutionResultMk StackUnderflow es)
+    end.
+
 Definition removeAndReturnFromStackThreeItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord)) := 
   let stack := getStack_ES es in 
     match stack with 
@@ -338,6 +340,33 @@ Definition removeAndReturnFromStackThreeItems es: (ExecutionResultOr (ExecutionS
           runningExecutionWithStateT 
             ((setStack_ES es tail), head1, head2, head3)
       | nil | _ :: nil | _ :: _ :: nil => failWithErrorCodeT es StackUnderflow
+    end.
+
+Definition removeAndReturnFromStackFourItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord * EVMWord)) := 
+  let stack := getStack_ES es in 
+    match stack with 
+      | head1 :: head2 :: head3 :: head4 :: tail => 
+          runningExecutionWithStateT 
+            ((setStack_ES es tail), head1, head2, head3, head4)
+      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil=> failWithErrorCodeT es StackUnderflow
+    end.
+
+Definition removeAndReturnFromStackFiveItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord * EVMWord * EVMWord)) := 
+  let stack := getStack_ES es in 
+    match stack with 
+      | head1 :: head2 :: head3 :: head4 :: head5 :: tail => 
+          runningExecutionWithStateT 
+            ((setStack_ES es tail), head1, head2, head3, head4, head5)
+      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: nil => failWithErrorCodeT es StackUnderflow
+    end.
+
+Definition removeAndReturnFromStackSixItems es: (ExecutionResultOr (ExecutionState * EVMWord * EVMWord * EVMWord * EVMWord * EVMWord * EVMWord)) := 
+  let stack := getStack_ES es in 
+    match stack with 
+      | head1 :: head2 :: head3 :: head4 :: head5 :: head6 :: tail => 
+          runningExecutionWithStateT 
+            ((setStack_ES es tail), head1, head2, head3, head4, head5, head6)
+      | nil | _ :: nil | _ :: _ :: nil | _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: nil | _ :: _ :: _ :: _ :: _ :: nil => failWithErrorCodeT es StackUnderflow
     end.
 
 Definition peekNthItemFromStack es (n: nat): (ExecutionResultOr EVMWord):= 
@@ -348,7 +377,34 @@ Definition peekNthItemFromStack es (n: nat): (ExecutionResultOr EVMWord):=
     end.
 (* end stack operations *)
 
-Check nat.
+Fixpoint insertItemsIntoMemoryAux(es: ExecutionState)(acc offset: nat)(words: list EVMWord){struct words} : ExecutionState :=
+  match words with 
+  | nil        => es
+  | w :: words' =>
+    let mem := getMemory_ES es in 
+    let updatedMemory := update (natToWord WLen (acc + offset), w) mem in 
+    let new_es := setMemory_ES es updatedMemory in 
+    insertItemsIntoMemoryAux new_es (S acc) offset words'
+  end.
+
+Definition insertItemsIntoMemory(es: ExecutionState)(offset: nat)(words: list EVMWord): ExecutionState :=
+  insertItemsIntoMemoryAux es 0 offset words.
+
+Definition zipBytesToWord(l: list (word 8)):= 
+  fold_left (fun acc => fun b => wor (wlshift' acc 8) (bytetoEWMword b)) l WZero.
+(* 
+Lemma 
+Compute let w0 := natToWord 8 1 in let w1 := natToWord 8 1 in let w2 := natToWord 8 1 in let res := zipBytesToWord (w1 :: w1 :: w1 :: w1 :: nil) in wordToN res.
+ *)
+
+Fixpoint zipListOfBytesIntoListOfWordsAux(l: list (word 8))(crutch: nat): list EVMWord :=
+  match crutch with 
+  | O => match l with | nil => nil | _ :: __ => (zipBytesToWord l) :: nil end
+  | S p => zipListOfBytesIntoListOfWordsAux (skipn 32 l) (p) ++ (zipBytesToWord (firstn 32 l) :: nil) 
+  end.
+
+Definition zipListOfBytesIntoListOfWords(l: list (word 8)): list EVMWord := 
+  zipListOfBytesIntoListOfWordsAux l ( ((length l) / 32) + 1).
 
 (* WordUtil *)
 Definition extractByteAsNat(w: EVMWord): ErrorCode + nat := 
@@ -409,6 +465,8 @@ Inductive SimplePriceOpcode: Set :=
 | DUP	          : word 4 -> SimplePriceOpcode
 | SWAP	        : word 4 -> SimplePriceOpcode
 | CREATE	      : SimplePriceOpcode
+| JUMP          : SimplePriceOpcode
+| JUMPI         : SimplePriceOpcode
 .
 
 Definition simplePriceOpcodePrice(o: SimplePriceOpcode): nat :=
@@ -463,6 +521,8 @@ Definition simplePriceOpcodePrice(o: SimplePriceOpcode): nat :=
   | DUP _	        => 3
   | SWAP	_       => 3
   | CREATE	      => 32000
+  | JUMP          => 8
+  | JUMPI         => 10
   end.
 
 Inductive ComplexPriceOpcode: Set :=
@@ -487,8 +547,6 @@ Inductive ComplexPriceOpcode: Set :=
 Inductive OpCode: Set :=
 |	STOP	              : OpCode
 |	RETURN	            : OpCode
-| JUMP	              : OpCode
-| JUMPI	              : OpCode
 | ComplexPriceOpcodeMk: ComplexPriceOpcode -> OpCode
 | SimplePriceOpcodeMk : SimplePriceOpcode  -> OpCode
 .
@@ -606,6 +664,23 @@ Definition get_accountBalances(ci: CallInfo): map_n_evmword :=
   | CallInfoMk calldata thisContractAddress callerBalance transactionHash callerAddress callEthValue thisContractCode txGasPrice blockHash blockNumber blockDificulty blockTimestamp gasLimit miner accountBalances=> 
     accountBalances
   end.
+
+Fixpoint getSliceFromMapAux{V: Type}(m: M.t V)(offset: EVMWord)(length : nat)(acc: list V){struct length}: ErrorCode + (list V) := 
+  match length with 
+  | O      => 
+    match find offset m with
+    | Some v => inr (acc ++ (v :: nil))
+    | None   => inl NonexistentMemoryCell
+    end
+  | S pred => 
+    match find offset m  with
+    | Some v => getSliceFromMapAux m (wplus offset WTrue) pred (acc ++ (v :: nil))
+    | None   => inl NonexistentMemoryCell
+    end
+  end.
+
+Definition getSliceFromMap{V: Type}(m: M.t V)(offset: EVMWord)(length : nat): ErrorCode + (list V) := 
+  getSliceFromMapAux m offset length nil.
 
 Definition stopAction(state: ExecutionState): OpcodeApplicationResult := 
   stopExecutionWithSuccess (state).
@@ -906,7 +981,18 @@ Definition codesizeActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplic
 Definition gaspriceActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
     runningExecutionWithState (pushItemToExecutionStateStack state (get_txGasPrice ci)).
 
-(* extcodesize *)
+Definition exctcodesizeActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackOneItem state)
+    (fun tup2 => 
+      match tup2 with 
+      | (es, address) => 
+        match find address (getContractMap_ES es) with
+        | Some contract => runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen (length contract)))
+        | None          => failWithErrorCode es NonexistentMemoryCell
+        end
+      end
+    ).
 (* extcodecopy *)
 
 Definition blockhashActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
@@ -980,7 +1066,7 @@ Definition sloadActionPure(state: ExecutionState): OpcodeApplicationResult :=
     ).
 
 Definition sstoreActionPure(state: ExecutionState): OpcodeApplicationResult := 
-  flatMap 
+  flatMap
   (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
@@ -988,9 +1074,14 @@ Definition sstoreActionPure(state: ExecutionState): OpcodeApplicationResult :=
       end
     ).
 
-(* PC *) 
-(* MSIZE *)
-(* GAS *)
+Definition pcActionPure(state: ExecutionState)(programCounter: nat): OpcodeApplicationResult := 
+  runningExecutionWithState (pushItemToExecutionStateStack state (natToWord  WLen programCounter)).
+
+Definition msizeActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen (mapLength (getMemory_ES state)))).
+
+Definition gasActionPure(state: ExecutionState)(gas: nat): OpcodeApplicationResult := 
+  runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen gas)).
 
 Definition pushActionPure(bytes: word 5)(w: EVMWord)(state: ExecutionState): OpcodeApplicationResult :=
   let checkedWord := pushWordPass w (wordToNat bytes + 1) in 
@@ -1010,14 +1101,213 @@ Definition swapActionPure(bytes: word 4)(state: ExecutionState): OpcodeApplicati
    | None              => failWithErrorCode state BadPeekArg
    end.
 
+
 (* LOG*) 
 (* CREATE *)
 (* CALL *)
 (* CALLCODE*)
-(*RETURN*)
+Definition returnActionPure(state: ExecutionState): ExecutionResult := 
+    flatMap
+    (removeAndReturnFromStackTwoItemsEnder state)
+    (fun tup3 => 
+      match tup3 with (* todo complete*)
+      | (es, offset, length) => 
+        match getSliceFromMap (getMemory_ES es) offset (wordToNat length) with 
+        | inl error => inl (ErrorneousExecutionResultMk error es)
+        | inr returndata  => inr (SuccessfulExecutionResultMkWithData es returndata)
+        end
+      end
+    ).
+
+Definition jumpActionPure(state: ExecutionState)(program: list OpCode): OpcodeApplicationResult:= 
+  flatMap
+  (removeAndReturnFromStackOneItem state)
+  (fun tup2 => 
+    match tup2 with  
+    | (es, pos) => 
+      match N.ltb (wordToN pos) (N.of_nat (length program)) with 
+      | true  => 
+        let posNat := wordToNat pos in
+        match nth_error program posNat with
+        | Some(SimplePriceOpcodeMk JUMPDEST) => runningExecutionWithState (setPc_ES es posNat)
+        | _ => failWithErrorCode es InvalidJumpDest
+        end
+      | false => failWithErrorCode es InvalidJumpDest
+      end
+    end
+  ).
+
+Definition jumpiActionPure(state: ExecutionState)(program: list OpCode): OpcodeApplicationResult:= 
+  flatMap
+  (removeAndReturnFromStackTwoItems state)
+  (fun tup3 => 
+    match tup3 with  
+    | (es, pos, cond) => 
+      match weqb cond WZero with
+      | false => 
+        match N.ltb (wordToN pos) (N.of_nat (length program)) with 
+        | true  => 
+          let posNat := wordToNat pos in
+          match nth_error program posNat with
+          | Some(SimplePriceOpcodeMk JUMPDEST) => runningExecutionWithState (setPc_ES es posNat)
+          | _ => failWithErrorCode es InvalidJumpDest
+          end
+        | false => failWithErrorCode es InvalidJumpDest
+        end
+      | true => runningExecutionWithState es
+      end
+    end
+  ).
+
+Definition calldatacopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+  flatMap
+  (removeAndReturnFromStackThreeItems state) 
+  (fun tup4 => 
+    match tup4 with 
+    | (es, destOffset, offset, length) => 
+      match getSliceFromList (get_calldata ci) (wordToNat offset) (wordToNat length) with 
+      | Some words => runningExecutionWithState (insertItemsIntoMemory es (wordToNat destOffset) words)
+      | None       => failWithErrorCode es NonexistentCallDataCell
+      end
+    end)
+.
+
+Definition codecopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+  flatMap
+  (removeAndReturnFromStackThreeItems state) 
+  (fun tup4 => 
+    match tup4 with 
+    | (es, destOffset, offset, length) => 
+      match getSliceFromList (get_thisContractCode ci) (wordToNat offset) (wordToNat length) with 
+      | Some words => runningExecutionWithState (insertItemsIntoMemory es (wordToNat destOffset) (zipListOfBytesIntoListOfWords words))
+      | None       => failWithErrorCode es NonexistentCallDataCell
+      end
+    end)
+.
+
+Definition extcodecopyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+  flatMap
+  (removeAndReturnFromStackFourItems state) 
+  (fun tup5 => 
+    match tup5 with 
+    | (es, addr, destOffset, offset, length) => 
+      match find addr (getContractMap_ES es) with 
+      | Some contract => 
+        match getSliceFromList (contract) (wordToNat offset) (wordToNat length) with 
+        | Some words => runningExecutionWithState (insertItemsIntoMemory es (wordToNat destOffset) (zipListOfBytesIntoListOfWords words))
+        | None       => failWithErrorCode es NonexistentCallDataCell
+        end
+      | None => failWithErrorCode es NonexistentContract
+      end
+    end)
+.
+
+Definition log0ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackTwoItems state) 
+  (fun tup3 => 
+    match tup3 with
+    | (es, offset, length) => 
+      match getSliceFromMap (getMemory_ES es) offset (wordToNat length) with 
+        | inl error => failWithErrorCode es error 
+        | inr logData  => 
+          let log := Log0 logData in 
+          let logs := getLog_ES es in 
+          let es2 := setLog_ES es logs in
+            runningExecutionWithState es2
+        end
+      end
+    ).
+
+Definition log1ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackThreeItems state) 
+  (fun tup4 => 
+    match tup4 with
+    | (es, offset, length, topic0) => 
+      match getSliceFromMap (getMemory_ES es) offset (wordToNat length) with 
+        | inl error => failWithErrorCode es error 
+        | inr logData  => 
+          let log := Log1 topic0 logData  in 
+          let logs := getLog_ES es in 
+          let es2 := setLog_ES es logs in
+            runningExecutionWithState es2
+        end
+      end
+    ).
+
+Definition log2ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackFourItems state) 
+  (fun tup5 => 
+    match tup5 with
+    | (es, offset, length, topic0, topic1) => 
+      match getSliceFromMap (getMemory_ES es) offset (wordToNat length) with 
+        | inl error => failWithErrorCode es error 
+        | inr logData  => 
+          let log := Log2 topic0 topic1 logData  in 
+          let logs := getLog_ES es in 
+          let es2 := setLog_ES es logs in
+            runningExecutionWithState es2
+        end
+      end
+    ).
+
+Definition log3ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackFiveItems state) 
+  (fun tup6 => 
+    match tup6 with
+    | (es, offset, length, topic0, topic1, topic2) => 
+      match getSliceFromMap (getMemory_ES es) offset (wordToNat length) with 
+        | inl error => failWithErrorCode es error 
+        | inr logData  => 
+          let log := Log3 topic0 topic1 topic2 logData  in 
+          let logs := getLog_ES es in 
+          let es2 := setLog_ES es logs in
+            runningExecutionWithState es2
+        end
+      end
+    ).
+
+Definition log4ActionPure(state: ExecutionState): OpcodeApplicationResult := 
+  flatMap 
+  (removeAndReturnFromStackSixItems state) 
+  (fun tup6 => 
+    match tup6 with
+    | (es, offset, length, topic0, topic1, topic2, topic3) => 
+      match getSliceFromMap (getMemory_ES es) offset (wordToNat length) with 
+        | inl error => failWithErrorCode es error 
+        | inr logData  => 
+          let log := Log4 topic0 topic1 topic2 topic3 logData  in 
+          let logs := getLog_ES es in 
+          let es2 := setLog_ES es logs in
+            runningExecutionWithState es2
+        end
+      end
+    ).
+
 (*DELEGATECALL*)
 (*SELFDESTRUCT*)
-Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
+(* Definition expCost(pow: word WLen): nat := 
+  match weqb pow WZero with 
+  | true  => 10%nat
+  | false => 10%nat + 10%nat * (1%nat + ((log2Orzero pow)/ 8%nat))
+  end.
+
+Definition expActionPure(state: ExecutionState)(program: list OpCode)(gas: nat): OpcodeApplicationResult :=
+  flatMap 
+  (removeAndReturnFromStackTwoItems state)
+    (fun tup3 => 
+      match tup3 with  
+      | (es, a, pow) => 
+        (* (exp == 0) ? 10 : (10 + 10 * (1 + log256(exp))) *)
+        
+      end
+    ).
+ *)
+
+Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionState)(ci: CallInfo)(gas pc: nat)(program: list OpCode): OpcodeApplicationResult := 
   match opc with 
   | ADD	          => addActionPure state
   | MUL	          => mulActionPure state
@@ -1049,7 +1339,7 @@ Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionStat
   | CALLDATASIZE	=> calldatasizeActionPure state ci
   | CODESIZE	    => codesizeActionPure state ci
   | GASPRICE	    => gaspriceActionPure state ci
-  | EXTCODESIZE	  => stopExecutionWithSuccess (state) (* TODO implement *)
+  | EXTCODESIZE	  => exctcodesizeActionPure state ci
   | BLOCKHASH	    => blockhashActionPure state ci
   | COINBASE	    => coinbaseActionPure state ci
   | TIMESTAMP	    => timestampActionPure state ci
@@ -1061,15 +1351,36 @@ Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionStat
   | MSTORE	      => mstoreActionPure state
   | MSTORE8	      => mstore8ActionPure state
   | SLOAD	        => sloadActionPure state
-  | PC	          => stopExecutionWithSuccess (state) (* TODO implement *)
-  | MSIZE	        => stopExecutionWithSuccess (state) (* TODO implement *)
-  | GAS	          => stopExecutionWithSuccess (state) (* TODO implement *)
-  | JUMPDEST	    => stopExecutionWithSuccess (state) (* TODO implement *)
+  | PC	          => pcActionPure state pc 
+  | MSIZE	        => msizeActionPure state
+  | GAS	          => gasActionPure state gas 
+  | JUMPDEST	    => runningExecutionWithState state
   | PUSH arg word	=> pushActionPure arg word state
   | DUP arg	      => dupActionPure arg state
   | SWAP	arg     => swapActionPure arg state
   | CREATE	      => stopExecutionWithSuccess (state) (* TODO implement *)
+  | JUMP          => jumpActionPure state program
+  | JUMPI         => jumpiActionPure state program
 (*   | _   => stopExecutionWithSuccess (state) *)
+  end.
+
+Definition opcodeProgramStateChangeComplex(opc: ComplexPriceOpcode)(state: ExecutionState)(ci: CallInfo)(gas pc: nat)(program: list OpCode): OpcodeApplicationResult := 
+  match opc with 
+  |	EXP           => stopExecutionWithSuccess (state)
+  |	SHA3          => stopExecutionWithSuccess (state)
+  |	CALLDATACOPY  => stopExecutionWithSuccess (state)
+  |	CODECOPY      => stopExecutionWithSuccess (state)
+  |	EXTCODECOPY   => stopExecutionWithSuccess (state)
+  |	SSTORE        => stopExecutionWithSuccess (state)
+  |	LOG0          => stopExecutionWithSuccess (state)
+  |	LOG1          => stopExecutionWithSuccess (state)
+  |	LOG2          => stopExecutionWithSuccess (state)
+  |	LOG3          => stopExecutionWithSuccess (state)
+  |	LOG4          => stopExecutionWithSuccess (state)
+  |	CALL          => stopExecutionWithSuccess (state)
+  |	CALLCODE      => stopExecutionWithSuccess (state)
+  |	DELEGATECALL  => stopExecutionWithSuccess (state)
+  |	SELFDESTRUCT  => stopExecutionWithSuccess (state)
   end.
 
 (* Super ugly but i don't wan to bother with well-founded stuff.*)
@@ -1083,12 +1394,10 @@ Fixpoint actOpcode(gas programCounter: nat)(ec: ExecutionState)(program: list Op
       | Some opc => 
         match opc with 
         | STOP                        => inr (SuccessfulExecutionResultMk ec)
-        |	RETURN	                    => inr (SuccessfulExecutionResultMk ec) (* TODO change to return memory region *)
-        | JUMP	                      => inr (SuccessfulExecutionResultMk ec) (* TODO change to unconditional jump *)
-        | JUMPI	                      => inr (SuccessfulExecutionResultMk ec) (* TODO change to conditional jump *)
+        |	RETURN	                    => returnActionPure ec
         | ComplexPriceOpcodeMk opcode => inr (SuccessfulExecutionResultMk ec) (* TODO change to the opcodes implementation*)
         | SimplePriceOpcodeMk opcode  => 
-          match opcodeProgramStateChange opcode ec callInfo with 
+          match opcodeProgramStateChange opcode ec callInfo gas programCounter program with 
           | inl result       => result
           | inr updatedState => (* reduce gas and go on*)(* gas - gasCost = (gas - 1) - (gasCost - 1)*)
             actOpcode (predGas - ((simplePriceOpcodePrice opcode) -1)) (S programCounter) updatedState program callInfo
@@ -1110,12 +1419,10 @@ Fixpoint actOpcodeWithInstructionsLimitation(maxinstructions gas programCounter:
       | Some opc => 
         match opc with 
         | STOP                        => inr (SuccessfulExecutionResultMk ec)
-        |	RETURN	                    => inr (SuccessfulExecutionResultMk ec) (* TODO change to return memory region *)
-        | JUMP	                      => inr (SuccessfulExecutionResultMk ec) (* TODO change to unconditional jump *)
-        | JUMPI	                      => inr (SuccessfulExecutionResultMk ec) (* TODO change to conditional jump *)
+        |	RETURN	                    => returnActionPure ec
         | ComplexPriceOpcodeMk opcode => inr (SuccessfulExecutionResultMk ec) (* TODO change to the opcodes implementation*)
         | SimplePriceOpcodeMk opcode  => 
-          match opcodeProgramStateChange opcode ec callInfo with 
+          match opcodeProgramStateChange opcode ec callInfo gas programCounter program with 
           | inl result       => result
           | inr updatedState => (* reduce gas and go on*)(* gas - gasCost = (gas - 1) - (gasCost - 1)*)
             let gasLeft := gas - (simplePriceOpcodePrice opcode) in
