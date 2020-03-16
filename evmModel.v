@@ -10,15 +10,17 @@ Require Import Coq.Numbers.NatInt.NZLog.
 Require Import Coq.ZArith.Wf_Z.
 Require Export FMapAVL.
 Require Export Coq.Structures.OrderedTypeEx.
-
+Require Import Lia.
 Module M := FMapAVL.Make(N_as_OT).
 
 
 (* Compute (wordToNat (wplus (natToWord 32 10) (natToWord 32 20))). *)
 Definition WLen: nat := 256. 
+Definition bigNum: N := wordToN (wlshift' (natToWord 257 1) 256).
 Definition EVMWord:= word WLen.
 Definition ByteLen: nat := 8.
 Definition Byte := word ByteLen.
+Definition StackLen := 1024.
 Definition WZero: EVMWord  := natToWord WLen 0.
 Definition WTrue: EVMWord  := natToWord WLen 1. 
 Definition WFalse: EVMWord := natToWord WLen 0. 
@@ -51,7 +53,11 @@ Definition bytetoEWMword(w: word 8): EVMWord. Proof.
 apply (Word.combine w (wzero' 248)).
 Defined.
 Compute wordToN (bytetoEWMword (natToWord 8 1)).
-
+Definition wordSubModulus(a b: EVMWord): EVMWord := 
+  if N.ltb (wordToN a) (wordToN b) 
+  then NToWord WLen (bigNum - ((wordToN b) - (wordToN a)))
+  else wminus a b
+.
 Definition map_n_evmword := M.t EVMWord.
 Definition find {V: Type}(k: EVMWord)(m: M.t V) := M.find (wordToN k) m.
 Definition update (p: EVMWord * EVMWord) (m: map_n_evmword) :=
@@ -69,18 +75,44 @@ Fixpoint wordmsb {sz: nat}(bitnum aux: nat)(w: word sz): nat :=
   end.
 
 Definition log2Orzero {sz} (w: word sz): nat := wordmsb 0 0 w.
-(* Fixpoint effExp(a b: Z){struct b}: Z  := 
-  match Z.eqb b 0 with
-  | true  => 1
-  | galse => 
-    match Z.eqb (b / 2) 1 with
-    | true  => a * effExp a (b - 1)
-    | false => (effExp a (b / 2)) * (effExp a (b / 2))
+(* aux parameter required to ensure termnation checker, for words we will have at most 256 iterations *)
+Fixpoint effExpAux(a b: N)(aux: nat){struct aux}: N  := 
+  match aux with 
+  | O => 0 
+  | S p =>
+    match N.eqb b 0 with
+    | true  => 1
+    | false => 
+      match N.eqb (N.modulo b 2) 1 with
+      | true  => a * (effExpAux a (b - 1) p)
+      | false => (effExpAux a (b / 2) p ) * (effExpAux a (b / 2) p)
+      end
     end
-  end. *)
-  
+  end. 
 
-Compute log2Orzero (natToWord 8 7).
+Fixpoint expmodAux (a b m: N)(aux: nat): N:=
+  match N.eqb m 1 with 
+  | true  => 0 
+  | false =>
+    match aux with 
+    | 0 => 0
+    | S p => 
+      match N.eqb b 0 with 
+      | true  => 1
+      | false => 
+        match N.eqb (N.modulo b 2) 1 with
+        | true  => N.modulo (a * (effExpAux a (b - 1) p)) m
+        | false =>  let presq := (effExpAux a (b / 2) p ) in N.modulo (presq * presq) m
+        end
+      end
+    end
+  end.
+
+Definition effExp(a b: N): N := effExpAux a b 512%nat.
+Definition expmod(a b m: N): N := expmodAux a b m 512%nat.
+(* Compute let maxword := (effExp 2 256) in let mwm1 
+:= N.sub maxword 1 in effExp mwm1 mwm1. *)
+Definition wordModulus := effExp 2 256.
 
 Notation "k |-> v" := (pair k v) (at level 60).
 Notation "k |-> v" := (pair k v) (at level 60).
@@ -90,6 +122,11 @@ Notation "[ p1 , .. , pn ]" := (update p1 .. (update pn (M.empty nat)) .. ).
 Compute pushWordPass Wones 32.
 
 Compute NToWord 8 1.
+
+Definition combine {A B C: Type}(f: A -> B)(g: B -> C): A -> C := 
+fun a => g (f a).
+
+Notation "f1 * f2" := (combine f1 f2).
 
 Definition map{L R R1: Type}(s: L + R)(f: R -> R1): L + R1 := 
   match s with 
@@ -135,8 +172,12 @@ Fixpoint gtb(a b: nat): bool :=
   | (O, S _) => false
   | (S predA, S predB) => gtb predA predB
   end.
-
-Definition flatMapO{A B: Set}(o: option A)(f: A -> option B): option B := 
+Definition mapO{A B: Type}(o: option A)(f: A -> B): option B := 
+  match o with 
+  | Some a => Some (f a)
+  | None   => None
+  end. 
+Definition flatMapO{A B: Type}(o: option A)(f: A -> option B): option B := 
   match o with 
   | Some a => f a
   | None   => None
@@ -249,6 +290,7 @@ Inductive ErrorCode: Set :=
 | InvalidOpcode: ErrorCode
 | InvalidJumpDest: ErrorCode
 | StackUnderflow: ErrorCode
+| StackOverflow: ErrorCode
 | BadWordAsByte: ErrorCode
 | BadSigExtendWord: ErrorCode
 | BadByteArgI: ErrorCode
@@ -296,8 +338,10 @@ Definition setProgramCounter(es: ExecutionState)(programLength newPc: nat): Opco
 (* end program counter opertaions*)
 
 (* stack operations *)
-Definition pushItemToExecutionStateStack es item: ExecutionState := 
-  setStack_ES es (item :: (getStack_ES es)).
+Definition pushItemToExecutionStateStack es item: OpcodeApplicationResult :=
+  if(length (getStack_ES es) <? 1024)
+  then runningExecutionWithState (setStack_ES es (item :: (getStack_ES es)))
+  else failWithErrorCode es StackOverflow.
 
 Definition removeAndDropFromStackOneItem es := 
   let stack := getStack_ES es in 
@@ -688,7 +732,7 @@ Definition addActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     ( fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wplus a b))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (wplus a b))  
       end
     ).
 
@@ -697,7 +741,8 @@ Definition mulActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wmult a b))  
+      | (es, a, b) => 
+        pushItemToExecutionStateStack es (wmult a b)
       end
     ).
 
@@ -706,7 +751,7 @@ Definition subActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wminus a b))  
+      | (es, a, b) => pushItemToExecutionStateStack es (wordSubModulus a b)
       end
     ).
 
@@ -715,7 +760,7 @@ Definition divActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wdiv a b))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (wdiv a b))  
       end
     ).
 
@@ -724,7 +769,7 @@ Definition sdivActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wdivZ a b))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (wdivZ a b))  
       end
     ).
 
@@ -733,7 +778,7 @@ Definition modActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wmod a b))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (wmod a b))  
       end
     ).
 
@@ -742,7 +787,7 @@ Definition smodActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (ZToWord WLen (Z.rem (wordToZ a) (wordToZ b))))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (ZToWord WLen (Z.rem (wordToZ a) (wordToZ b))))  
       end
     ).
 
@@ -754,7 +799,7 @@ Definition addmodActionPure(state: ExecutionState): OpcodeApplicationResult :=
       | (es, a, b, N) => 
       let za := wordToZ a in let zb := wordToZ b in let zN := Z.of_N (wordToN N) in 
       let zres := Z.rem (za + zb) zN in
-      runningExecutionWithState (pushItemToExecutionStateStack es (ZToWord WLen zres))  
+      (pushItemToExecutionStateStack es (ZToWord WLen zres))  
       end
     ).
 
@@ -766,7 +811,7 @@ Definition mulmodActionPure(state: ExecutionState): OpcodeApplicationResult :=
       | (es, a, b, N) => 
       let za := wordToZ a in let zb := wordToZ b in let zN := Z.of_N (wordToN N) in 
       let zres := Z.rem (za * zb) zN in
-      runningExecutionWithState (pushItemToExecutionStateStack es (ZToWord WLen zres))  
+      (pushItemToExecutionStateStack es (ZToWord WLen zres))  
       end
     ).
 
@@ -778,7 +823,7 @@ Definition signextendActionPure(state: ExecutionState): OpcodeApplicationResult 
       | (es, a, b) => 
         match extractByteAsNat b with 
         | inl err => failWithErrorCode es err
-        | inr n   => runningExecutionWithState (pushItemToExecutionStateStack es (sextWordBytes a n))
+        | inr n   => (pushItemToExecutionStateStack es (sextWordBytes a n))
         end
       end
     ).
@@ -788,7 +833,7 @@ Definition ltActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (boolToWord (wultb a b)))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (boolToWord (wultb a b)))  
       end
     ).
 
@@ -797,7 +842,7 @@ Definition gtActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (boolToWord (wugtb a b)))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (boolToWord (wugtb a b)))  
       end
     ).
 
@@ -807,7 +852,7 @@ Definition sltActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (boolToWord (wsltb a b)))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (boolToWord (wsltb a b)))  
       end
     ).
 
@@ -816,7 +861,7 @@ Definition sgtActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (boolToWord (wsgtb a b)))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (boolToWord (wsgtb a b)))  
       end
     ).
 
@@ -826,7 +871,7 @@ Definition eqActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (boolToWord (weqb a b)))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (boolToWord (weqb a b)))  
       end
     ).
 
@@ -835,7 +880,7 @@ Definition iszeroActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackOneItem state)
     (fun tup2 => 
       match tup2 with 
-      | (es, a) => runningExecutionWithState (pushItemToExecutionStateStack es (boolToWord (weqb a WZero)))  
+      | (es, a) => (pushItemToExecutionStateStack es (boolToWord (weqb a WZero)))  
       end
     ).
 
@@ -844,7 +889,7 @@ Definition andActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wand a b))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (wand a b))  
       end
     ).
 
@@ -853,7 +898,7 @@ Definition orActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wor a b))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (wor a b))  
       end
     ).
 
@@ -862,7 +907,7 @@ Definition xorActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with 
-      | (es, a, b) => runningExecutionWithState (pushItemToExecutionStateStack es (wxor a b))  
+      | (es, a, b) => (pushItemToExecutionStateStack es (wxor a b))  
       end
     ).
 
@@ -871,7 +916,7 @@ Definition notActionPure(state: ExecutionState): OpcodeApplicationResult :=
     (removeAndReturnFromStackOneItem state)
     (fun tup2 => 
       match tup2 with 
-      | (es, a) => runningExecutionWithState (pushItemToExecutionStateStack es (wnot a))  
+      | (es, a) => (pushItemToExecutionStateStack es (wnot a))  
       end
     ).
 
@@ -884,7 +929,7 @@ Definition byteActionPure(state: ExecutionState): OpcodeApplicationResult :=
         match extractByteAsNat i with 
         | inr inat    => 
             match Nat.ltb inat 32 with 
-            | true  => runningExecutionWithState (pushItemToExecutionStateStack es (withbyte x inat)) 
+            | true  => (pushItemToExecutionStateStack es (withbyte x inat)) 
             | false => failWithErrorCode es BadShlArgI
             end
         | inl errCode => failWithErrorCode es errCode
@@ -901,7 +946,7 @@ Definition shlActionPure(state: ExecutionState): OpcodeApplicationResult :=
         match extractByteAsNat i with 
         | inr inat    => 
             match Nat.ltb inat 257 with 
-            | true  => runningExecutionWithState (pushItemToExecutionStateStack es (wlshift' x inat)) 
+            | true  => (pushItemToExecutionStateStack es (wlshift' x inat)) 
             | false => failWithErrorCode es BadShrArgI
             end
         | inl errCode => failWithErrorCode es errCode
@@ -918,7 +963,7 @@ Definition shrActionPure(state: ExecutionState): OpcodeApplicationResult :=
         match extractByteAsNat i with 
         | inr inat    => 
             match Nat.ltb inat 257 with 
-            | true  => runningExecutionWithState (pushItemToExecutionStateStack es (wrshift' x inat)) 
+            | true  => (pushItemToExecutionStateStack es (wrshift' x inat)) 
             | false => failWithErrorCode es BadByteArgI
             end
         | inl errCode => failWithErrorCode es errCode
@@ -928,7 +973,7 @@ Definition shrActionPure(state: ExecutionState): OpcodeApplicationResult :=
 
 (*SHA3*)
 Definition addressActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-  runningExecutionWithState (pushItemToExecutionStateStack state (get_thisContractAddress ci)).
+  (pushItemToExecutionStateStack state (get_thisContractAddress ci)).
 
 Definition balanceActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult :=
   flatMap 
@@ -937,21 +982,21 @@ Definition balanceActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplica
       match tup2 with 
       | (es, a) => 
         match find a (get_accountBalances ci) with
-        | Some balance => runningExecutionWithState (pushItemToExecutionStateStack es balance)  
+        | Some balance => (pushItemToExecutionStateStack es balance)  
         | None => failWithErrorCode es NonexistentAddress
         end
       end
     ).
   
 Definition originActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-  runningExecutionWithState (pushItemToExecutionStateStack state (get_callerAddress ci)).
+  (pushItemToExecutionStateStack state (get_callerAddress ci)).
 
 (*  becasue currently implemnted state of EVM does not support nested contract calls, callser = origin *)
 Definition callerActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-  runningExecutionWithState (pushItemToExecutionStateStack state (get_callerAddress ci)).
+  (pushItemToExecutionStateStack state (get_callerAddress ci)).
 
 Definition callvalueActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-  runningExecutionWithState (pushItemToExecutionStateStack state (get_callEthValue ci)).
+  (pushItemToExecutionStateStack state (get_callEthValue ci)).
 
 Definition calldataloadActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
     flatMap
@@ -961,23 +1006,23 @@ Definition calldataloadActionPure(state: ExecutionState)(ci: CallInfo): OpcodeAp
       | (es, idxWord) => 
         let i := wordToNat idxWord in 
           match nth_error (get_calldata ci) i with 
-          | Some dataCell => runningExecutionWithState (pushItemToExecutionStateStack es dataCell)  
+          | Some dataCell => (pushItemToExecutionStateStack es dataCell)  
           | None          => failWithErrorCode es BadCallDataLoadArgI
           end
       end
     ).
 
 Definition calldatasizeActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen (length (get_calldata ci)))).
+    (pushItemToExecutionStateStack state (natToWord WLen (length (get_calldata ci)))).
 
 (*Calldatacopy*)
 
 Definition codesizeActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen (length (get_thisContractCode ci)))).
+    (pushItemToExecutionStateStack state (natToWord WLen (length (get_thisContractCode ci)))).
 (* codecopy *)
 
 Definition gaspriceActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (get_txGasPrice ci)).
+    (pushItemToExecutionStateStack state (get_txGasPrice ci)).
 
 Definition exctcodesizeActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
   flatMap 
@@ -986,7 +1031,7 @@ Definition exctcodesizeActionPure(state: ExecutionState)(ci: CallInfo): OpcodeAp
       match tup2 with 
       | (es, address) => 
         match find address (getContractMap_ES es) with
-        | Some contract => runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen (length contract)))
+        | Some contract => (pushItemToExecutionStateStack state (natToWord WLen (length contract)))
         | None          => failWithErrorCode es NonexistentMemoryCell
         end
       end
@@ -994,22 +1039,22 @@ Definition exctcodesizeActionPure(state: ExecutionState)(ci: CallInfo): OpcodeAp
 (* extcodecopy *)
 
 Definition blockhashActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (get_blockHash ci)).
+    (pushItemToExecutionStateStack state (get_blockHash ci)).
 
 Definition coinbaseActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (get_miner ci)).
+    (pushItemToExecutionStateStack state (get_miner ci)).
 
 Definition timestampActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (get_blockTimestamp ci)).
+    (pushItemToExecutionStateStack state (get_blockTimestamp ci)).
 
 Definition numberActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (get_blockNumber ci)).
+    (pushItemToExecutionStateStack state (get_blockNumber ci)).
 
 Definition dificultyActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (get_blockDificulty ci)).
+    (pushItemToExecutionStateStack state (get_blockDificulty ci)).
 
 Definition gaslimitActionPure(state: ExecutionState)(ci: CallInfo): OpcodeApplicationResult := 
-    runningExecutionWithState (pushItemToExecutionStateStack state (get_gasLimit ci)).
+    (pushItemToExecutionStateStack state (get_gasLimit ci)).
 
 Definition popActionPure(state: ExecutionState): OpcodeApplicationResult := 
     flatMap
@@ -1025,7 +1070,7 @@ Definition mloadActionPure(state: ExecutionState): OpcodeApplicationResult :=
       match tup2 with 
       | (es, key) => 
         match find key (getMemory_ES es) with
-        | Some wrd => runningExecutionWithState (pushItemToExecutionStateStack state wrd)
+        | Some wrd => (pushItemToExecutionStateStack state wrd)
         | None     => failWithErrorCode es NonexistentMemoryCell
         end
       end
@@ -1057,7 +1102,7 @@ Definition sloadActionPure(state: ExecutionState): OpcodeApplicationResult :=
       match tup2 with 
       | (es, key) => 
         match find key (getStorage_ES es) with
-        | Some wrd => runningExecutionWithState (pushItemToExecutionStateStack state wrd)
+        | Some wrd => (pushItemToExecutionStateStack state wrd)
         | None     => failWithErrorCode es NonexistentMemoryCell
         end
       end
@@ -1084,23 +1129,23 @@ Definition sstoreActionPure(state: ExecutionState): ExecutionResultOr (Execution
     ).
 
 Definition pcActionPure(state: ExecutionState)(programCounter: nat): OpcodeApplicationResult := 
-  runningExecutionWithState (pushItemToExecutionStateStack state (natToWord  WLen programCounter)).
+  (pushItemToExecutionStateStack state (natToWord  WLen programCounter)).
 
 Definition msizeActionPure(state: ExecutionState): OpcodeApplicationResult := 
-  runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen (mapLength (getMemory_ES state)))).
+  (pushItemToExecutionStateStack state (natToWord WLen (mapLength (getMemory_ES state)))).
 
 Definition gasActionPure(state: ExecutionState)(gas: nat): OpcodeApplicationResult := 
-  runningExecutionWithState (pushItemToExecutionStateStack state (natToWord WLen gas)).
+  (pushItemToExecutionStateStack state (natToWord WLen gas)).
 
 Definition pushActionPure(bytes: word 5)(w: EVMWord)(state: ExecutionState): OpcodeApplicationResult :=
   let checkedWord := pushWordPass w (wordToNat bytes + 1) in 
-  runningExecutionWithState (pushItemToExecutionStateStack state checkedWord).
+  (pushItemToExecutionStateStack state checkedWord).
 
 Definition dupActionPure(bytes: word 4)(state: ExecutionState):OpcodeApplicationResult := 
   flatMap
   (peekNthItemFromStack state (wordToNat bytes)) 
   (fun item => 
-    runningExecutionWithState (pushItemToExecutionStateStack state item)
+    (pushItemToExecutionStateStack state item)
   ).
 
 Definition swapActionPure(bytes: word 4)(state: ExecutionState): OpcodeApplicationResult := 
@@ -1134,15 +1179,14 @@ Definition jumpActionPure(state: ExecutionState)(program: list OpCode): OpcodeAp
   (fun tup2 => 
     match tup2 with  
     | (es, pos) => 
-      match N.ltb (wordToN pos) (N.of_nat (length program)) with 
-      | true  => 
+      if N.ltb (wordToN pos) (N.of_nat (length program)) 
+      then 
         let posNat := wordToNat pos in
         match nth_error program posNat with
         | Some(SimplePriceOpcodeMk JUMPDEST) => runningExecutionWithState (setPc_ES es posNat)
         | _ => failWithErrorCode es InvalidJumpDest
         end
-      | false => failWithErrorCode es InvalidJumpDest
-      end
+      else failWithErrorCode es InvalidJumpDest
     end
   ).
 
@@ -1152,19 +1196,16 @@ Definition jumpiActionPure(state: ExecutionState)(program: list OpCode): OpcodeA
   (fun tup3 => 
     match tup3 with  
     | (es, pos, cond) => 
-      match weqb cond WZero with
-      | false => 
-        match N.ltb (wordToN pos) (N.of_nat (length program)) with 
-        | true  => 
-          let posNat := wordToNat pos in
-          match nth_error program posNat with
-          | Some(SimplePriceOpcodeMk JUMPDEST) => runningExecutionWithState (setPc_ES es posNat)
-          | _ => failWithErrorCode es InvalidJumpDest
-          end
-        | false => failWithErrorCode es InvalidJumpDest
-        end
-      | true => runningExecutionWithState es
-      end
+      if weqb cond WZero 
+      then runningExecutionWithState es  
+      else if N.ltb (wordToN pos) (N.of_nat (length program)) 
+           then
+             let posNat := wordToNat pos in
+             match nth_error program posNat with
+             | Some(SimplePriceOpcodeMk JUMPDEST) => runningExecutionWithState (setPc_ES es posNat)
+             | _ => failWithErrorCode es InvalidJumpDest
+             end
+           else failWithErrorCode es InvalidJumpDest
     end
   ).
 
@@ -1299,22 +1340,21 @@ Definition log4ActionPure(state: ExecutionState): ExecutionResultOr (ExecutionSt
 (*DELEGATECALL*)
 (*SELFDESTRUCT*)
 Definition expCost(pow: word WLen): nat := 
-  match weqb pow WZero with 
-  | true  => 10%nat
-  | false => 10%nat + 10%nat * (1%nat + ((log2Orzero pow)/ 8%nat))
-  end.
-(* 
-Definition expActionPure(state: ExecutionState)(program: list OpCode)(gas: nat): OpcodeApplicationResult :=
+  if weqb pow WZero 
+  then 10%nat
+  else 10%nat + 10%nat * (1%nat + ((log2Orzero pow)/ 8%nat)).
+
+Definition expActionPure(state: ExecutionState): ExecutionResultOr (ExecutionState * nat)  :=
   flatMap 
   (removeAndReturnFromStackTwoItems state)
     (fun tup3 => 
       match tup3 with  
       | (es, a, pow) => 
-        (* (exp == 0) ? 10 : (10 + 10 * (1 + log256(exp))) *)
-        
+        let res := expmod (wordToN a) (wordToN pow) (wordModulus) in 
+        runningExecutionWithState (es, expCost pow)
       end
     ).
- *)
+
 
 Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionState)(ci: CallInfo)(gas pc: nat)(program: list OpCode): OpcodeApplicationResult := 
   match opc with 
@@ -1376,7 +1416,7 @@ Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionStat
 
 Definition opcodeProgramStateChangeComplex(opc: ComplexPriceOpcode)(state: ExecutionState)(ci: CallInfo)(gas pc: nat)(program: list OpCode): ExecutionResultOr (ExecutionState* nat) := 
   match opc with 
-  |	EXP           => failWithErrorCode state NotImplemented
+  |	EXP           => expActionPure state
   |	SHA3          => failWithErrorCode state NotImplemented
   |	CALLDATACOPY  => calldatacopyActionPure state ci
   |	CODECOPY      => codecopyActionPure state ci
@@ -1458,17 +1498,411 @@ Fixpoint actOpcodeWithInstructionsLimitation(maxinstructions gas programCounter:
       | false => inl (ErrorneousExecutionResultMk  OutOfGas ec)
       end
     end. 
+(* Facts about opcodes *)
+
+Definition rightProj{A B: Type}(s: A+B): option B := 
+match s with
+| inr b => Some b
+| inl _ => None
+end.
+
+Lemma liftedSome{T: Type}: forall t1 t2: T, t1 = t2 <-> Some t1 = Some t2. Proof.
+intros.
+split.
+intros.
+rewrite H.
+trivial.
+intros.
+injection H as H.
+apply H. 
+Defined.
+
+Lemma liftSome{T: Type}: forall t1 t2: T, t1 = t2 -> Some t1 = Some t2. Proof.
+apply liftedSome.
+Defined.
+
+Lemma unliftSome{T: Type}: forall t1 t2: T, Some t1 = Some t2 -> t1 =t2. Proof.
+apply liftedSome.
+Defined.
+
+Lemma listsEqualHeads{T: Type}: forall t1 t2: T, forall tail: list T, t1 :: tail = t2 :: tail <-> t1 = t2. Proof.
+intros.
+split. 
+intros.
+injection H as H.
+rewrite H.
+trivial.
+intros.
+rewrite H.
+trivial.
+Defined.
+
+Lemma listLengthApp{T: Type}: forall h: T, forall l t: list T, h :: t = l -> length l = S (length t). Proof.
+intros. 
+intros.
+rewrite <- H.
+(* cut (forall T: Type, forall t: T, forall tail: list T, (t :: nil) ++ tail = t :: tail). *)
+cut (h :: t = (h :: nil) ++ t). intros. rewrite H0. rewrite app_length.
+cut (length (h :: nil) = 1). intros. rewrite H1.
+trivial. 
+unfold length.
+trivial.
+unfold app.
+trivial.
+Defined.
+
+Lemma natLtbPlusOne: forall n m: nat, n <? m = true -> S n <? S m = true.
+Proof.
+intros.
+tauto.
+Qed.
+
+Lemma listAppLength{T: Type}: forall n: nat, forall h t l: list T, length l < n -> l = h ++ t -> length (t) < n. Proof.
+intros.
+rewrite H0 in H.
+rewrite app_length in H.
+lia.
+Qed.
+
+Lemma rightCrossover: forall n m: nat, n < m -> n <? m = true. Proof.
+Admitted. 
+
+Lemma leftCrossover: forall n m: nat, n <? m = true -> n < m. Proof.
+Admitted.
+Ltac unfoldUtilDefinitions := 
+unfold 
+mapO, rightProj,
+getStack_ES, removeAndReturnFromStackOneItem, removeAndReturnFromStackTwoItems, removeAndReturnFromStackThreeItems, pushItemToExecutionStateStack, 
+getStack_ES, failWithErrorCode, runningExecutionWithState, setStack_ES, flatMap.
+
+Ltac unfoldUtilDefinitionsIn H := 
+unfold 
+mapO, rightProj,
+getStack_ES, removeAndReturnFromStackOneItem, removeAndReturnFromStackTwoItems, removeAndReturnFromStackThreeItems, pushItemToExecutionStateStack, failWithErrorCode, runningExecutionWithState, setStack_ES, flatMap in H.
+
+Ltac cutRewrite bla hname:=  
+cut(bla); only 1 : intro hname; only 1 :rewrite hname.
+
+Ltac cutRewriteInL bla hname hnameTarg:=  
+cut(bla); only 1 : intro hname; only 1 : rewrite <- hname in hnameTarg.
+
+Ltac cutRewriteInR bla hname hnameTarg:=  
+cut(bla); only 1 : intro hname; only 1 : rewrite -> hname in hnameTarg.
 
 
-(*
-Fixpoint executeProgram(gas: nat)(initialState: ExecutionState)(program: list OpCode): OpcodeApplicationResult := 
-  match initialState with 
-  | ExecutionStateMk pc _ =>  
-    match (nth_error program pc) with
-    | Some opcode => 
-      flatMapE _ _
-      (opcodeProgramStateChange opcode initialState )
-      (fun state => executeProgram state program)
-    | None => failWithErrorCode initialState OutOfGas
-    end
-  end.*)
+Theorem addActionPureSuccess:
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := addActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(wplus w1 w2 :: tail).
+Proof.
+intros es w1 w2 tail preStack post postStack H H0.
+destruct es.
+subst preStack. subst postStack. subst post.
+unfold addActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+
+Theorem mulActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := mulActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(wmult w1 w2 :: tail). Proof.
+intros es w1 w2 tail preStack post postStack H H0.
+destruct es.
+subst preStack. subst postStack. subst post.
+unfold mulActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+Theorem subActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := subActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(wordSubModulus w1 w2 :: tail). Proof.
+intros es w1 w2 tail preStack post postStack H H0.
+destruct es.
+subst preStack. subst postStack. subst post.
+unfold subActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+Theorem divActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := divActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(wdiv w1 w2 :: tail). Proof.
+intros es w1 w2 tail preStack post postStack H H0.
+destruct es.
+subst preStack. subst postStack. subst post.
+unfold divActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+Theorem sdivActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := sdivActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(wdivZ w1 w2 :: tail). Proof.
+intros es w1 w2 tail preStack post postStack H H0.
+destruct es.
+subst preStack. subst postStack. subst post.
+unfold sdivActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+Theorem modActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := modActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(wmod w1 w2 :: tail). Proof.
+intros es w1 w2 tail preStack post postStack H H0.
+destruct es.
+subst preStack. subst postStack. subst post.
+unfold modActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+Theorem smodActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := smodActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+let res := ZToWord WLen (Z.rem (wordToZ w1) (wordToZ w2)) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(res :: tail). Proof.
+intros es w1 w2 tail preStack post postStack res H H0.
+destruct es.
+subst preStack. subst postStack. subst post. subst res.
+unfold smodActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+Theorem addmodActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2 w3: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := addmodActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+let res := ZToWord WLen (Z.rem ((wordToZ w1) + (wordToZ w2)) (Z.of_N (wordToN w3))) in
+length preStack < 1024 -> preStack = w1 :: w2 :: w3 :: tail ->
+postStack = Some(res  :: tail). Proof.
+intros es w1 w2 w3 tail preStack post postStack res H H0.
+destruct es.
+subst preStack. subst postStack. subst post. subst res.
+unfold addmodActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: w3 :: nil) ++ tail = w1 :: w2 :: w3 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: w3 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+Theorem mulmodActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2 w3: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := mulmodActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+let res := ZToWord WLen (Z.rem ((wordToZ w1) * (wordToZ w2)) (Z.of_N (wordToN w3))) in
+length preStack < 1024 -> preStack = w1 :: w2 :: w3 :: tail ->
+postStack = Some(res  :: tail). Proof.
+intros es w1 w2 w3 tail preStack post postStack res H H0.
+destruct es.
+subst preStack. subst postStack. subst post. subst res.
+unfold mulmodActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: w3 :: nil) ++ tail = w1 :: w2 :: w3 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: w3 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+
+Theorem expActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let post := expActionPure es in
+let postStack := mapO (rightProj post) (fst * getStack_ES) in
+let res := NToWord WLen (expmod (wordToN w1) (wordToN w2) (wordModulus)) in
+length preStack < 1024 -> preStack = w1 :: w2 :: tail ->
+postStack = Some(res :: tail). Proof.
+intros es w1 w2 tail preStack post postStack res H H0.
+destruct es.
+subst preStack. subst postStack. subst post. subst res.
+unfold expActionPure.
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0. 
+cutRewrite (length tail <? 1024 = true) H1.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
