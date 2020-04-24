@@ -1453,7 +1453,12 @@ Fixpoint actOpcode(gas programCounter: nat)(ec: ExecutionState)(program: list Op
         match opc with 
         | STOP                        => inr (SuccessfulExecutionResultMk ec)
         |	RETURN	                    => returnActionPure ec
-        | ComplexPriceOpcodeMk opcode => inr (SuccessfulExecutionResultMk ec) (* TODO change to the opcodes implementation*)
+        | ComplexPriceOpcodeMk opcode => 
+          match opcodeProgramStateChangeComplex opcode ec callInfo gas programCounter program with
+          | inl result => inr (SuccessfulExecutionResultMk ec)
+          | inr (updatedState, reducedGas) => 
+            actOpcode (predGas - (reducedGas) - 1) (S programCounter) updatedState program callInfo
+          end
         | SimplePriceOpcodeMk opcode  => 
           match opcodeProgramStateChange opcode ec callInfo gas programCounter program with 
           | inl result       => result
