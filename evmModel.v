@@ -337,6 +337,11 @@ Definition setProgramCounter(es: ExecutionState)(programLength newPc: nat): Opco
     end.
 (* end program counter opertaions*)
 
+Definition attach{T: Type}(o: OpcodeApplicationResult)(t: T): ExecutionResultOr (ExecutionState *T) := 
+  map 
+  o 
+  (fun es => (es,t)).
+
 (* stack operations *)
 Definition pushItemToExecutionStateStack es item: OpcodeApplicationResult :=
   if(length (getStack_ES es) <? 1024)
@@ -1350,11 +1355,11 @@ Definition expActionPure(state: ExecutionState): ExecutionResultOr (ExecutionSta
     (fun tup3 => 
       match tup3 with  
       | (es, a, pow) => 
-        let res := expmod (wordToN a) (wordToN pow) (wordModulus) in 
-        runningExecutionWithState (es, expCost pow)
+        let resN := expmod (wordToN a) (wordToN pow) (wordModulus) in 
+        let res := NToWord WLen resN in
+        attach (pushItemToExecutionStateStack es res) (expCost pow)
       end
     ).
-
 
 Definition opcodeProgramStateChange(opc: SimplePriceOpcode)(state: ExecutionState)(ci: CallInfo)(gas pc: nat)(program: list OpCode): OpcodeApplicationResult := 
   match opc with 
@@ -1571,13 +1576,13 @@ Lemma leftCrossover: forall n m: nat, n <? m = true -> n < m. Proof.
 Admitted.
 Ltac unfoldUtilDefinitions := 
 unfold 
-mapO, rightProj,
+mapO, rightProj,attach, "*",
 getStack_ES, removeAndReturnFromStackOneItem, removeAndReturnFromStackTwoItems, removeAndReturnFromStackThreeItems, pushItemToExecutionStateStack, 
 getStack_ES, failWithErrorCode, runningExecutionWithState, setStack_ES, flatMap.
 
 Ltac unfoldUtilDefinitionsIn H := 
 unfold 
-mapO, rightProj,
+mapO, rightProj, attach, "*",
 getStack_ES, removeAndReturnFromStackOneItem, removeAndReturnFromStackTwoItems, removeAndReturnFromStackThreeItems, pushItemToExecutionStateStack, failWithErrorCode, runningExecutionWithState, setStack_ES, flatMap in H.
 
 Ltac cutRewrite bla hname:=  
@@ -1892,12 +1897,51 @@ unfold expActionPure.
 unfoldUtilDefinitions.
 unfoldUtilDefinitionsIn H.
 unfoldUtilDefinitionsIn H0.
-rewrite H0. 
+rewrite H0.
+unfold "*" .
+unfold fst.
 cutRewrite (length tail <? 1024 = true) H1.
+unfold map.
 rewrite <- liftedSome.
 rewrite listsEqualHeads.
 trivial.
 cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H1 H0. rewrite H0 in H.
+rewrite rightCrossover. trivial.
+apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
+rewrite <- H0 in H.
+apply H.
+assumption.
+unfold "++".
+trivial.
+Qed.
+
+
+Theorem signextendActionPureSuccess: 
+forall es: ExecutionState, 
+forall w1 w2: EVMWord,
+forall tail: list EVMWord,
+let preStack := getStack_ES es in
+let b := rightProj (extractByteAsNat w2) in
+let res := mapO b (fun bb => sextWordBytes w1 bb) in
+let post := signextendActionPure es in
+let postStack := mapO (rightProj post) (getStack_ES) in
+length preStack < 1024 -> weqb (wlshift' w2 8%nat) WZero = true -> preStack = w1 :: w2 :: tail ->
+postStack = mapO res (fun h => h :: tail). Proof.
+intros es w1 w2 tail preStack b res post postStack H H1 H0.
+destruct es.
+subst preStack. subst postStack. subst post. subst res. subst b. 
+unfold signextendActionPure. 
+unfoldUtilDefinitions.
+unfoldUtilDefinitionsIn H.
+unfoldUtilDefinitionsIn H0.
+rewrite H0.
+unfold extractByteAsNat.
+rewrite H1.
+cutRewrite (length tail <? 1024 = true) H2.
+rewrite <- liftedSome.
+rewrite listsEqualHeads.
+trivial.
+cutRewriteInL ((w1 :: w2 :: nil) ++ tail = w1 :: w2 :: tail) H2 H0. rewrite H0 in H.
 rewrite rightCrossover. trivial.
 apply (listAppLength 1024 (w1 :: w2 :: nil) tail l).
 rewrite <- H0 in H.
